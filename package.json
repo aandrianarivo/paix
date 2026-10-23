@@ -1,0 +1,8 @@
+{
+  "name": "paix",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paix — jeu de combat 3D (campagne + multijoueur en ligne)",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}

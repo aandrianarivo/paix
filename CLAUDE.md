@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Laisse-moi tranquille" — a French-language, offline 3D fighting-game/narrative prototype (3 fights, cutscenes, synthesized SFX, system TTS voices). Not a git repository, no build system, no package manager, no tests, no linter.
+"Paix" — a French-language 3D fighting game: a solo story **campaign** (3 fights, cutscenes, behind a password) and an **online 1v1 multiplayer** mode. Flow: home (`#home`) → Campagne (`#pwd` → `#menu`) or Multijoueur (`#lobby` → `#select` → duel). No build step, no tests, no linter, not a git repo. All UI/narrative text is French; keep it that way.
 
-The whole game is a single file, `index.html` (~1160 lines: CSS, HTML screens, one big inline `<script>`), plus static JSON/texture assets in `assets/`. All UI text and narrative copy is in French; keep it that way.
+The game is `index.html` (CSS, screens, one inline `<script>` IIFE) plus static assets in `assets/`. `server.js` (Node + `ws`) serves `/` and `/assets/*` only, exposes `POST /api/campaign-auth`, and relays WebSocket messages between the two players of a room.
 
 ## Running
 
-Serve the directory over HTTP (assets are loaded with `fetch`/loaders, so `file://` will fail):
-
 ```
-python3 -m http.server 8000   # then open http://localhost:8000/
+npm install
+CAMPAIGN_PASSWORD=secret PORT=8000 npm start   # random password (printed) if CAMPAIGN_PASSWORD is unset
 ```
+Friends connect to the same server (LAN IP, or a tunnel such as ngrok/cloudflared). Three.js r128 + loaders and Google Fonts come from CDNs; keep Three.js pinned at r128 (global `THREE`, no ES modules).
 
-Three.js r128, GLTFLoader and SkeletonUtils are loaded from CDNs (cdnjs / jsDelivr), and Google Fonts too — so first load needs network. Keep Three.js pinned at r128 (globals-style `THREE.*`, `examples/js` loaders; no ES modules).
+The campaign password is only a light barrier: the campaign code ships inside the public `index.html`.
 
-Debug hook: `window.__lmt` (end of the script) exposes `ai`, `M` (MOVES), `g` (grapple), `step(n, dt)` to advance the simulation headlessly, and `key(code, down)` to inject key events — use it for scripted checks in a browser/headless driver.
+Debug hook `window.__lmt` (end of script): `step(n, dt)` advances `tick` manually (essential in headless Chrome, where software rendering runs ~3 FPS), `key`, `p`/`o` (player/opponent Fighter), `s` (state). Multiplayer was tested by driving two headless Chrome instances over CDP and calling `__lmt.step` on both.
 
 ## Architecture (inside index.html's script)
 
@@ -34,3 +34,7 @@ Sections are marked with `/* ---------- Name ---------- */` comments; search for
 ## Assets
 
 `assets/chars` (character glTF JSON + diffuse/normal textures), `assets/anims` (clip JSON), `assets/kenney` (building glTF JSON + `Textures/colormap.png`), `assets/tex` (ground textures). Credits shown in the menu: Mixamo (Adobe) characters/animations, Kenney (CC0) buildings, Poly Haven (CC0) ground textures — preserve this note if editing the menu.
+
+## Multiplayer (section `/* ---------- Multijoueur en ligne ---------- */`)
+
+Host-authoritative: the room creator runs the whole existing simulation (`Fighter.update`, `tryHit`, `tryGrab`, `updateGrapple`). `vs` (non-null during a duel) switches behaviours: no AI, no AI grapple meter, no pause, `onKO` → `versusEnd`. The remote player's intent comes from `remoteIntent`, fed by guest messages `m` (movement in world space), `q` (buffered J/K/E/dodge) and `mash`. The host sends snapshots (`s`, ~30 Hz, `snapF`) plus an event list (`ev(...)` hooks in `sparks/popup/callout/sfx/showCombo/impulse`); the guest only applies them (`applySnap`, `applyEvents`, `guestFollow`) and animates. `player`/`opp` are always local/remote perspective (the guest's `player` is `vs.f2`). `Fighter.set` bumps `setN` so the guest restarts animations. Playable characters are the `CHARS` table (Mixamo `ch31`/`ch08` looks + clothes-colour variants). `NET.role` is `'host' | 'guest' | null`.
