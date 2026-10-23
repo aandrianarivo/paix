@@ -1,0 +1,141 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Convertisseur d'animations</title>
+<!-- Outil de développement (non servi par server.js) : charge un FBX, génère des planches-contact et exporte des clips au format JSON du jeu.
+     Piloté en headless Chrome (voir CLAUDE.md) : window.info / window.sheet / window.exportClip. -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/fflate.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
+<script>
+window.load=url=>new Promise((res,rej)=>new THREE.FBXLoader().load(url,res,undefined,rej));
+window.info=async url=>{
+  const o=await load(url); const bones=[]; o.traverse(n=>{ if(n.isBone||n.type==='Bone') bones.push(n.name); });
+  return {bones,clips:o.animations.map(a=>({name:a.name,duration:a.duration,tracks:a.tracks.length}))};
+};
+// Planche-contact : n images du clip dessinées en squelette (vue 3/4 fixe), pour juger un mouvement sans retarget.
+window.sheet=async(url,n,cols,clipIdx)=>{
+  const o=await load(url), clip=o.animations[clipIdx||0], mixer=new THREE.AnimationMixer(o); mixer.clipAction(clip).play();
+  const scene=new THREE.Scene(); scene.add(o); const sk=new THREE.SkeletonHelper(o); scene.add(sk);
+  const T=[]; for(let i=0;i<n;i++) T.push(clip.duration*i/(n-1||1)*0.999);
+  const box=new THREE.Box3(), tmp=new THREE.Vector3();
+  const place=t=>{ mixer.setTime(t); o.updateMatrixWorld(true); };
+  for(const t of T){ place(t); o.traverse(b=>{ if(b.isBone){ b.getWorldPosition(tmp); box.expandByPoint(tmp); } }); }
+  const c=box.getCenter(new THREE.Vector3()), sz=box.getSize(new THREE.Vector3()), R=Math.max(sz.x,sz.y,sz.z)*0.62;
+  const W=190,H=230, rows=Math.ceil(n/cols), cv=document.createElement('canvas'); cv.width=W*cols; cv.height=H*rows; document.body.appendChild(cv);
+  const r=new THREE.WebGLRenderer({canvas:cv,antialias:true,preserveDrawingBuffer:true}); r.setScissorTest(true); r.setClearColor(0xffffff);
+  const cam=new THREE.OrthographicCamera(-R*W/H,R*W/H,R,-R,0.1,1e5); const d=new THREE.Vector3(0.9,0.35,1).normalize().multiplyScalar(R*6);
+  cam.position.copy(c).add(d); cam.lookAt(c);
+  r.setViewport(0,0,cv.width,cv.height); r.setScissor(0,0,cv.width,cv.height); r.clear();
+  T.forEach((t,i)=>{ place(t); const x=(i%cols)*W, y=cv.height-(Math.floor(i/cols)+1)*H; r.setViewport(x,y,W,H); r.setScissor(x,y,W,H); r.render(scene,cam); });
+  const out={png:cv.toDataURL('image/png'),duration:clip.duration,times:T.map(t=>+t.toFixed(2)),size:[sz.x,sz.y,sz.z].map(v=>+v.toFixed(1))};
+  cv.remove(); r.dispose(); return out;
+};
+
+/* ---------- Retarget iPi (Haley Tuffles) → squelette Mixamo du jeu (ch31) ----------
+   Les os sont réorientés par visée (direction articulation→enfant en espace monde), sans la torsion ; le bassin par un repère
+   (hanches + colonne). Pas de déplacement horizontal (clip « sur place »), la hauteur du bassin est mise à l'échelle. */
+const AIM=[ // [os cible, articulation source, enfant source, enfant cible]
+ ['Spine','LowerSpine','MiddleSpine','Spine1'],['Spine1','MiddleSpine','Chest','Spine2'],['Spine2','Chest','Neck','Neck'],
+ ['Neck','Neck','Head','Head'],['Head','Head','Head_end','HeadTop_End'],
+ ...['Left','Right'].flatMap(S=>{ const s=S[0]; return [
+  [S+'Shoulder',s+'Clavicle',s+'Shoulder',S+'Arm'],[S+'Arm',s+'Shoulder',s+'Forearm',S+'ForeArm'],[S+'ForeArm',s+'Forearm',s+'Hand',S+'Hand'],
+  [S+'UpLeg',s+'Thigh',s+'Shin',S+'Leg'],[S+'Leg',s+'Shin',s+'Foot',S+'Foot'],[S+'Foot',s+'Foot',s+'Toe',S+'ToeBase']]; })];
+window.loadTarget=async()=>{
+  const txt=await (await fetch('/game/assets/chars/ch31.json')).text();
+  const g=await new Promise((res,rej)=>new THREE.GLTFLoader().parse(txt,'/game/assets/chars/',res,rej));
+  g.scene=THREE.SkeletonUtils.clone(g.scene); g.scene.updateMatrixWorld(true); return g; // le clone rattache le maillage à ses os, comme dans le jeu
+};
+window.retarget=async(srcUrl,opts)=>{
+  opts=opts||{}; const fps=opts.fps||30;
+  const g=await loadTarget(), T={}; g.scene.traverse(o=>{ if(o.isBone) T[o.name.replace('mixamorig','')]=o; });
+  const src=await load(srcUrl), S={}; src.traverse(o=>{ if(o.isBone||o.type==='Bone') S[o.name]=o; }); src.updateMatrixWorld(true);
+  const clip=src.animations[opts.clip||0], mixer=new THREE.AnimationMixer(src); mixer.clipAction(clip).play();
+  const P=()=>{ const o={}; for(const k in S) o[k]=S[k].getWorldPosition(new THREE.Vector3()); return o; };
+  const basis=(lt,rt,up)=>{ const x=lt.clone().sub(rt).normalize(), y=up.clone(); y.addScaledVector(x,-y.dot(x)).normalize(); const z=new THREE.Vector3().crossVectors(x,y);
+    return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x,y,z)); };
+  const sBasis=p=>basis(p.LThigh,p.RThigh,p.Chest.clone().sub(p.Hip));
+  const wq=n=>T[n].getWorldQuaternion(new THREE.Quaternion()), wp=n=>T[n].getWorldPosition(new THREE.Vector3());
+  const p0=P(), Bs0=sBasis(p0), Bt0=basis(wp('LeftUpLeg'),wp('RightUpLeg'),wp('Spine2').sub(wp('Hips')));
+  const Y=Bt0.clone().multiply(Bs0.clone().invert());
+  const scale=wp('Hips').y/p0.Hip.y, hips0=wp('Hips'), Qh0=wq('Hips');
+  const Tp={}; const parentName=n=>T[n].parent.name.replace('mixamorig','');
+  const rest=n=>T[n].quaternion.clone(), restW={}; for(const k in T) restW[k]=wq(k);
+  const names=['Hips',...AIM.map(a=>a[0])], times=[], vals={}; names.forEach(n=>vals[n]=[]); const hp=[];
+  const parentInv=T.Hips.parent.matrixWorld.clone().invert(), Qpar=T.Hips.parent.getWorldQuaternion(new THREE.Quaternion());
+  const N=Math.max(2,Math.round(clip.duration*fps)+1);
+  for(let i=0;i<N;i++){
+    const t=Math.min(clip.duration,i/fps)*0.9999; times.push(+(i/fps).toFixed(4)); mixer.setTime(t); src.updateMatrixWorld(true);
+    const p=P(), Bt=Y.clone().multiply(sBasis(p)), Qw={};
+    const Qh=Bt.clone().multiply(Bt0.clone().invert()).multiply(Qh0); Qw.Hips=Qh;
+    vals.Hips.push(...Qpar.clone().invert().multiply(Qh).toArray());
+    const dp=p.Hip.clone().sub(p0.Hip).applyQuaternion(Y).multiplyScalar(scale), ph=hips0.clone().add(dp);
+    const lp=ph.applyMatrix4(parentInv); const l0=T.Hips.position; hp.push(l0.x,lp.y,l0.z);
+    for(const [n,sj,sc,tc] of AIM){
+      const par=parentName(n), Qp=Qw[par]||restW[par], ql0=rest(n), Qcur=Qp.clone().multiply(ql0);
+      const dRest=T[tc].position.clone().normalize(), cur=dRest.applyQuaternion(Qcur);
+      const want=p[sc].clone().sub(p[sj]).applyQuaternion(Y).normalize();
+      const Qworld=new THREE.Quaternion().setFromUnitVectors(cur,want).multiply(Qcur); Qw[n]=Qworld;
+      vals[n].push(...Qp.clone().invert().multiply(Qworld).toArray());
+    }
+  }
+  const tracks=names.map(n=>new THREE.QuaternionKeyframeTrack('mixamorig'+n+'.quaternion',times,vals[n]));
+  tracks.unshift(new THREE.VectorKeyframeTrack('mixamorigHips.position',times,hp));
+  const out=new THREE.AnimationClip(opts.name||'retarget',times[times.length-1],tracks);
+  return {json:out.toJSON(),scene:g.scene,clip:out};
+};
+// Planche-contact sur le vrai personnage (ch31, matériau gris).
+window.charSheet=async(srcUrl,n,cols,opts)=>{
+  const R=await retarget(srcUrl,opts), sc=R.scene; const gm=new THREE.MeshStandardMaterial({color:0xb9b3a6,roughness:.8,skinning:true});
+  sc.traverse(o=>{ if(o.isMesh){ o.material=gm; o.frustumCulled=false; } });
+  const scene=new THREE.Scene(); scene.background=new THREE.Color(0xe9e6df); scene.add(sc);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x888877,1.1)); const dl=new THREE.DirectionalLight(0xffffff,1.1); dl.position.set(2,4,3); scene.add(dl);
+  const gr=new THREE.Mesh(new THREE.PlaneGeometry(10,10),new THREE.MeshBasicMaterial({color:0xd2cec4})); gr.rotation.x=-Math.PI/2; scene.add(gr);
+  const mixer=new THREE.AnimationMixer(sc); mixer.clipAction(R.clip).play();
+  const W=210,H=260, rows=Math.ceil(n/cols), cv=document.createElement('canvas'); cv.width=W*cols; cv.height=H*rows; document.body.appendChild(cv);
+  const r=new THREE.WebGLRenderer({canvas:cv,antialias:true,preserveDrawingBuffer:true}); r.setScissorTest(true);
+  const cam=new THREE.PerspectiveCamera(32,W/H,0.1,50); cam.position.set(1.7,1.5,3.1); cam.lookAt(0,0.95,0);
+  const T=[]; for(let i=0;i<n;i++) T.push(R.clip.duration*i/(n-1||1)*0.999);
+  r.setViewport(0,0,cv.width,cv.height); r.setScissor(0,0,cv.width,cv.height); r.setClearColor(0xe9e6df); r.clear();
+  T.forEach((t,i)=>{ mixer.setTime(t); const x=(i%cols)*W, y=cv.height-(Math.floor(i/cols)+1)*H; r.setViewport(x,y,W,H); r.setScissor(x,y,W,H); r.render(scene,cam); });
+  const png=cv.toDataURL('image/png'); cv.remove(); r.dispose();
+  return {png,json:R.json,duration:R.clip.duration,times:T.map(t=>+t.toFixed(2))};
+};
+
+// Clips Mixamo (même squelette que le jeu) : planche-contact sur ch31 et JSON direct (translations X/Z du bassin supprimées → sur place).
+window.mixSheet=async(srcUrl,n,cols,opts)=>{
+  opts=opts||{}; const g=await loadTarget(), src=await load(srcUrl); const clip=src.animations[opts.clip||0];
+  const tr=clip.tracks.filter(t=>/^mixamorig(Hips|Spine|Spine1|Spine2|Neck|Head|LeftShoulder|LeftArm|LeftForeArm|LeftHand|RightShoulder|RightArm|RightForeArm|RightHand|LeftUpLeg|LeftLeg|LeftFoot|LeftToeBase|RightUpLeg|RightLeg|RightFoot|RightToeBase)\.(quaternion|position)$/.test(t.name)&&(!/position/.test(t.name)||/Hips/.test(t.name)));
+  const hp=tr.find(t=>t.name==='mixamorigHips.position'); let travel=[0,0,0]; if(hp){ const v=hp.values, k=hp.times.length; // le jeu déplace le combattant : on garde la hauteur, on retire X/Z
+    travel=[v[(k-1)*3]-v[0],v[(k-1)*3+1]-v[1],v[(k-1)*3+2]-v[2]]; const x0=v[0],z0=v[2]; const sc=0.01; for(let i=0;i<k;i++){ v[i*3]=x0; v[i*3+2]=z0; } }
+  const out=new THREE.AnimationClip(opts.name||'clip',clip.duration,tr);
+  const sc=g.scene, gm=new THREE.MeshStandardMaterial({color:0xb9b3a6,roughness:.8,skinning:true}); sc.traverse(o=>{ if(o.isMesh){ o.material=gm; o.frustumCulled=false; } });
+  const scene=new THREE.Scene(); scene.background=new THREE.Color(0xe9e6df); scene.add(sc);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x888877,1.1)); const dl=new THREE.DirectionalLight(0xffffff,1.1); dl.position.set(2,4,3); scene.add(dl);
+  const gr=new THREE.Mesh(new THREE.PlaneGeometry(10,10),new THREE.MeshBasicMaterial({color:0xd2cec4})); gr.rotation.x=-Math.PI/2; scene.add(gr);
+  const mixer=new THREE.AnimationMixer(sc); mixer.clipAction(out).play();
+  const W=210,H=260, rows=Math.ceil(n/cols), cv=document.createElement('canvas'); cv.width=W*cols; cv.height=H*rows; document.body.appendChild(cv);
+  const r=new THREE.WebGLRenderer({canvas:cv,antialias:true,preserveDrawingBuffer:true}); r.setScissorTest(true);
+  const cam=new THREE.PerspectiveCamera(32,W/H,0.1,50); cam.position.set(2.3,1.4,3.3); cam.lookAt(0,0.95,0);
+  r.setViewport(0,0,cv.width,cv.height); r.setScissor(0,0,cv.width,cv.height); r.setClearColor(0xe9e6df); r.clear();
+  const t0=opts.t0||0, t1=opts.t1||clip.duration, T=[]; for(let i=0;i<n;i++) T.push(Math.min(clip.duration*0.999,t0+(t1-t0)*i/(n-1||1)));
+  T.forEach((t,i)=>{ mixer.setTime(t); const x=(i%cols)*W, y=cv.height-(Math.floor(i/cols)+1)*H; r.setViewport(x,y,W,H); r.setScissor(x,y,W,H); r.render(scene,cam); });
+  const png=cv.toDataURL('image/png'); cv.remove(); r.dispose();
+  return {png,json:out.toJSON(),duration:clip.duration,travel:travel.map(v=>+v.toFixed(1)),tracks:out.tracks.length,times:T.map(t=>+t.toFixed(2))};
+};
+
+// Analyse d'un clip Mixamo : pics de portée (horizontale, par rapport au bassin) des extrémités → instants d'impact candidats.
+window.analyze=async(srcUrl,opts)=>{
+  opts=opts||{}; const g=await loadTarget(), src=await load(srcUrl); const clip=src.animations[opts.clip||0];
+  const hp=clip.tracks.find(t=>t.name==='mixamorigHips.position'); if(hp){ const v=hp.values,k=hp.times.length,x0=v[0],z0=v[2]; for(let i=0;i<k;i++){ v[i*3]=x0; v[i*3+2]=z0; } }
+  const sc=g.scene, mixer=new THREE.AnimationMixer(sc); mixer.clipAction(clip).play();
+  const B={}; sc.traverse(o=>{ if(o.isBone) B[o.name.replace('mixamorig','')]=o; });
+  const EF=['LeftHand','RightHand','LeftFoot','RightFoot','LeftForeArm','RightForeArm','LeftLeg','RightLeg'];
+  const N=Math.round(clip.duration*30), rows=[], tmp=new THREE.Vector3(), h=new THREE.Vector3();
+  for(let i=0;i<=N;i++){ mixer.setTime(Math.min(clip.duration*0.9999,i/30)); sc.updateMatrixWorld(true);
+    B.Hips.getWorldPosition(h); const r={t:i/30,hipY:h.y}; for(const n of EF){ B[n].getWorldPosition(tmp); r[n]=Math.hypot(tmp.x-h.x,tmp.z-h.z); r[n+'Y']=tmp.y; } rows.push(r); }
+  const peaks={}; for(const n of EF){ peaks[n]=[]; for(let i=2;i<rows.length-2;i++){ const v=rows[i][n]; if(v>rows[i-1][n]&&v>=rows[i+1][n]&&v>rows[i-2][n]&&v>=rows[i+2][n]&&v>(/Hand|Foot/.test(n)?0.55:0.4)) peaks[n].push([+rows[i].t.toFixed(2),+v.toFixed(2),+rows[i][n+'Y'].toFixed(2)]); } }
+  return {duration:clip.duration,peaks,hipY:rows.filter((_,i)=>i%6===0).map(r=>[+r.t.toFixed(2),+r.hipY.toFixed(2)])};
+};
+</script>

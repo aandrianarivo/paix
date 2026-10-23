@@ -58,3 +58,11 @@ Licence CC0 : https://polyhaven.com/license
 ## Créé dans le code
 
 Terrain de basket, cour, grillage, mobilier, lampadaires, voiture, sons (synthèse Web Audio), voix (synthèse vocale du navigateur).
+
+## Animations — Haley Tuffles (motion capture libre)
+
+`assets/anims/pushback.json` (PushedBackwards), tiré du « Premade Mocap Pack » de Haley Tuffles (libre d'usage, crédit facultatif : « Motion Capture footage by Haley Tuffles »), retargetés sur le squelette Mixamo du jeu avec `tools/convert-anim.html`.
+
+## Animations ajoutées — Mixamo (Adobe), mêmes conditions
+
+Coups spéciaux découpés dans les fichiers fournis par le développeur le 23 octobre 2026 (`Illegal Elbow Punch`, `Knee Jabs To Uppercut`, `Inside Crescent Kick`, `Meia Lua De Compasso Back`, `Drop Kick`, `Flying Kick`, `Flip Kick`) : `assets/anims/{elbow,knee,crescent,meialua,dropkick,flyingkick,flipkick}.json`.

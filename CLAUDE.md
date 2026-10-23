@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Paix" — a French-language 3D fighting game: a solo story **campaign** (3 fights, cutscenes, behind a password) and an **online 1v1 multiplayer** mode. Flow: home (`#home`) → Campagne (`#pwd` → `#menu`) or Multijoueur (`#lobby` → `#select` → duel). No build step, no tests, no linter, not a git repo. All UI/narrative text is French; keep it that way.
+"Paix" — a French-language 3D fighting game: a solo story **campaign** (3 fights, cutscenes, behind a password) and an **online 1v1 multiplayer** mode. Flow: home (`#home`) → Entraînement (`startTraining`, `training` flag: immobile dummy, no KO, no AI escape) or Campagne (`#pwd` → `#menu`) or Multijoueur (`#lobby` → `#select` → duel). No build step, no tests, no linter, not a git repo. All UI/narrative text is French; keep it that way.
 
 The game is `index.html` (CSS, screens, one inline `<script>` IIFE) plus static assets in `assets/`. `server.js` (Node + `ws`) serves `/` and `/assets/*` only, exposes `POST /api/campaign-auth`, and relays WebSocket messages between the two players of a room.
 
@@ -24,14 +24,16 @@ Debug hook `window.__lmt` (end of script): `step(n, dt)` advances `tick` manuall
 
 Sections are marked with `/* ---------- Name ---------- */` comments; search for them to navigate.
 
-- **Data tables** (top): `FIGHTS` (per-fight arena, opponent key, AI params, loss text), `LOOKS` (character model/texture variants), `POSES`, `MOVES` (attack timing/hit data per move), `COMBOS` (input sequences like `J J J K` → named combo; mirrored in the pause-screen controls table in the HTML), `LABEL`.
+- **Data tables** (top): `FIGHTS` (per-fight arena, opponent key, AI params, loss text), `LOOKS` (character model/texture variants), `POSES`, `MOVES` (attack timing/hit data per move), `COMBOS` (tree: chain of moves → next move per key J/K/E; special moves flagged `heavy`/`down`/`whiff`/`rush` in `MOVES` are finishers reachable only at the end of a combo; the pause-screen list is generated from this tree by `buildComboList`). Victim-side rules: `heavy` moves raise the `#alert` edge glow and `warn` sound, `down` knocks the victim down (`floorKind:'knock'`), a whiffed `whiff` move leaves the attacker exposed, and `Fighter.canBreak` lets a victim dodge out of a combo after the 3rd hit taken, `LABEL`.
 - **Arenas**: `buildArena(kind)` dispatches to `buildStreet/Courtyard/Court`; geometry is procedural (boxes, canvas-generated facade textures via `facadeMat`/`canvasTex`) plus Kenney building GLTFs cloned via `kenneyClone`. `disposeGroup` skips objects flagged `userData.shared`.
 - **Characters**: Mixamo rigs (`ch08`, `ch31`) stored as glTF-in-JSON under `assets/chars/`. Animations in `assets/anims/*.json` are custom-serialized clips (`{name,duration,tracks}`) registered through the `ANIM` table (with `from/to/hit` windows in seconds) and `CLIP_LIB`. `Fighter` is the central class: kinematic control, combat state machine, plus a procedural layer on top of the clips (spring-driven `Spr`/`Spr3`, world-space bone helpers `applyQ/rotW/aimW`) for hits, guard, grapples.
-- **Combat rules**: `tryHit`, `tryGrab`, `updateGrapple` (throws and submissions; `mash` handles button-mashing to escape/tighten), `AI` class (driven by the per-fight `ai` params), `playerIntent` (keyboard/mouse/touch input buffered via `queue`).
+- **Combat rules**: `tryHit`, `tryGrab`, `updateGrapple` (throws and submissions; `mash` handles button-mashing to escape/tighten; the throw is choreographed by `throwLift(t)` — clinch, lift, slam at `THROW_HIT` — and the victim's rig is lifted/pitched in `Fighter.animate`, driven only by `G.t` so the guest renders it too), `AI` class (driven by the per-fight `ai` params), `playerIntent` (keyboard/mouse/touch input buffered via `queue`).
 - **Game flow / state machine**: global `state` (`menu`, `cine`, `fight`, `over`, `transition`, `pause`…). `INTRO[i]`, `AFTER[i]`, `LOSS(i)` are arrays of cutscene steps consumed by `playScene` → `nextStep`/`updateCine` (camera helpers `cClose/cOTS/cTwo/follow/push`, subtitle + voice via `speak`). `setupScene(i)` builds the arena for fight `i`; `startFight`, `onKO`, `afterFight`, `showEnd` advance the story. `loop` → `tick(dt)` is the main update; `boot()` at the bottom preloads clips, characters and Kenney models before enabling the Start button.
 - **Audio**: all SFX are synthesized with WebAudio (`sfx`), no audio files. Voices use `speechSynthesis` with per-speaker `VOICE_STYLE`.
 
 ## Assets
+
+`tools/convert-anim.html` (dev only, not served) retargets Haley Tuffles iPi-rig FBX clips (from `../paix_assets/`) onto the game's `ch31` Mixamo skeleton and renders contact sheets: serve `tools/`, `assets/` and the FBX folder from a small static server and drive it in headless Chrome (`window.charSheet(url,n,cols)` returns a PNG + the game-format clip JSON). Clip filenames in that pack do not match their content — always check the sheet.
 
 `assets/chars` (character glTF JSON + diffuse/normal textures), `assets/anims` (clip JSON), `assets/kenney` (building glTF JSON + `Textures/colormap.png`), `assets/tex` (ground textures). Credits shown in the menu: Mixamo (Adobe) characters/animations, Kenney (CC0) buildings, Poly Haven (CC0) ground textures — preserve this note if editing the menu.
 
